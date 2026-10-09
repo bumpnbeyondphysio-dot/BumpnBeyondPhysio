@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+
+
+
+<html>
+
+
+
+<head>
+
+
+
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+
+
+
+<title>Bump N Beyond Physio — Admin</title>
+
+
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+
+let jitsiApi=null;
+
+function openJitsi(id){
+  const a=appts.find(x=>String(x.id)===String(id));
+  if(!a||!a.meetingLink)return toast('Jitsi meeting link is not available yet.');
+  // Open the actual Jitsi room in its own tab so the meeting can use the full browser window.
+  // This runs directly from the Join button click, so popup blockers are less likely to block it.
+  const meetingTab=window.open(a.meetingLink,'_blank');
+  if(!meetingTab) toast('Your browser blocked the meeting tab. Allow pop-ups for this clinic site and click Join again.');
+}
+
+async function reviewManagement(){
+  $('reviews').innerHTML='<div class="page-title"><div><h2>Review Management</h2><p>Publish, hide, delete and reply to patient reviews. Published replies appear on the website.</p></div><button class="secondary" onclick="reviewManagement()">↻ Refresh</button></div><div class="panel"><div class="loading-bar"></div></div>';
+  try{
+    const reviews=await run('getAdminReviews',token());
+    window.reviewData=reviews||[];
+    const statusPill=(st)=>{const x=String(st||'PENDING').toUpperCase();const cls=x==='APPROVED'?'green':x==='HIDDEN'?'gray':'yellow';return '<span class="pill '+cls+'">'+esc(x)+'</span>';};
+    $('reviews').innerHTML=`<div class="page-title"><div><h2>Review Management</h2><p>Control what appears on the public website and reply directly to reviewers.</p></div><button class="secondary" onclick="reviewManagement()">↻ Refresh</button></div>
+    <div class="panel"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><h3 style="margin:0">All Reviews</h3><small style="color:var(--muted)">${reviews.length} review(s)</small></div></div>
+    <div class="review-admin-grid" style="margin-top:15px">${reviews.length?reviews.map(r=>`<article class="review-admin-card">
+      <div class="review-admin-head"><div><b>${esc(r.name||'Anonymous')}</b><div class="review-meta">${esc(r.email||'No email')} · ${esc(r.phone||'')}<br>${esc(r.timestamp||'')}</div></div><div style="text-align:right">${statusPill(r.status)}<div class="review-admin-stars">${'★'.repeat(Math.max(0,Math.min(5,Number(r.rating)||0)))}</div></div></div>
+      <div class="review-admin-review">${esc(r.review||'')}</div>
+      ${r.attachmentUrl?`<a class="review-attachment-admin" href="${esc(r.attachmentUrl)}" target="_blank" rel="noopener">View attachment${r.attachmentName?' — '+esc(r.attachmentName):''}</a>`:''}
+      ${r.reply?`<div class="review-admin-reply"><b>Clinic reply:</b><br>${esc(r.reply)}${r.replySentAt?`<div class="review-meta" style="margin-top:6px">Email: ${esc(r.replyEmailStatus||'')} · ${esc(r.replySentAt)}</div>`:''}</div>`:''}
+      <div class="review-admin-actions">
+        ${String(r.status).toUpperCase()!=='APPROVED'?`<button class="primary" onclick="setReviewVisibility('${esc(r.id)}','APPROVED')">✓ Display on Website</button>`:`<button class="secondary" onclick="setReviewVisibility('${esc(r.id)}','HIDDEN')">Hide from Website</button>`}
+        ${String(r.status).toUpperCase()!=='PENDING'?`<button class="secondary" onclick="setReviewVisibility('${esc(r.id)}','PENDING')">Set Pending</button>`:''}
+        <button class="secondary" onclick="openReviewReply('${esc(r.id)}')">${r.reply?'Edit / Resend Reply':'Reply & Publish'}</button>
+        <button class="danger" onclick="deleteAdminReview('${esc(r.id)}')">Delete</button>
+      </div>
+    </article>`).join(''):'<div class="panel"><b>No reviews found.</b><p style="color:var(--muted);margin-bottom:0">New reviews submitted on the website will appear here as Pending.</p></div>'}</div>`;
+  }catch(e){$('reviews').innerHTML='<div class="panel"><b>Unable to load reviews.</b><p style="color:#a83e3e">'+esc(e.message||'Please try again.')+'</p><button class="secondary" onclick="reviewManagement()">Try Again</button></div>';}
+}
+
+function openReviewReply(id){
+  const r=(window.reviewData||[]).find(x=>String(x.id)===String(id)); if(!r)return toast('Review not found.');
+  $('modalBox').innerHTML=`<div class="modal-head"><div><h3>${r.reply?'Edit / Resend Reply':'Reply to Review'}</h3><p style="margin:5px 0;color:var(--muted)">${esc(r.name)} · ${esc(r.email||'No email')}</p></div><button class="secondary" onclick="closeModal()">Close</button></div>
+  <div class="panel" style="background:#f7fbfa"><b>Patient review</b><div style="margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(r.review)}</div></div>
+  <div class="field" style="margin-top:14px"><label>Clinic reply</label><textarea id="reviewReplyText" class="reply-box" maxlength="5000" placeholder="Write a professional reply to the reviewer...">${esc(r.reply||'')}</textarea><small style="color:var(--muted)">Saving the reply will publish the review and email the reply to the reviewer.</small></div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="sendReviewReply('${esc(r.id)}')">${r.reply?'Save & Resend Reply':'Reply & Publish'}</button></div>`;
+  $('modal').style.display='grid';
+}
+
+async function sendReviewReply(id){
+  const reply=$('reviewReplyText').value.trim(); if(!reply)return toast('Please enter a reply.');
+  try{const r=await run('replyToReview',token(),id,reply);closeModal();toast(r.message);await reviewManagement();}catch(e){toast(e.message||'Unable to send the review reply.');}
+}
+
+async function setReviewVisibility(id,status){
+  try{const r=await run('setReviewStatus',token(),id,status);toast(r.message);await reviewManagement();}catch(e){toast(e.message||'Unable to update review.');}
+}
+
+async function deleteAdminReview(id){
+  if(!confirm('Delete this review permanently? This cannot be undone.'))return;
+  try{const r=await run('deleteReview',token(),id);toast(r.message);await reviewManagement();}catch(e){toast(e.message||'Unable to delete review.');}
+}
+
+async function treatmentPlans(){
+  $('treatmentPlans').innerHTML='<div class="page-title"><div><h2>Treatment Plans</h2><p>View, create and edit treatment plans for every paid service.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" onclick="treatmentPlans()">↻ Refresh</button><button class="primary" onclick="openTreatmentPlan()">+ Create Treatment Plan</button></div></div><div class="panel"><div class="loading-bar"></div></div>';
+  try{
+    const r=await run('getTreatmentPlans',token()); window.treatmentData=r;
+    const plans=r.plans||[], payments=r.payments||[];
+    $('treatmentPlans').innerHTML=`<div class="page-title"><div><h2>Treatment Plans</h2><p>View, edit and resend revised plans. Frequency is optional unless the admin marks it as required.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" onclick="treatmentPlans()">↻ Refresh</button><button class="primary" onclick="openTreatmentPlan()">+ Create Treatment Plan</button></div></div>
+    <div class="panel"><h3>All Treatment Plans</h3><div class="table-wrap"><table class="table"><thead><tr><th>Patient</th><th>Service</th><th>Plan ID</th><th>Sessions</th><th>Fee / Session</th><th>Frequency</th><th>Booked</th><th>Remaining</th><th>Status</th><th>Email</th><th>Actions</th></tr></thead><tbody>
+    ${plans.length?plans.map(p=>`<tr><td><b>${esc(p.name)}</b><br><small>${esc(p.email)}</small></td><td>${esc(p.service||'—')}</td><td>${esc(p.planId)}</td><td>${p.sessions}</td><td>₹${Number(p.fee||0).toLocaleString('en-IN')}</td><td>${esc(p.frequency?((p.frequency==='WEEKLY'?'Weekly':'Monthly')+(p.frequencyRequired?' · Required':' · Optional')):'No fixed frequency')}</td><td>${p.booked}</td><td><b>${p.remaining}</b></td><td>${pill(p.status)}</td><td>${pill(p.emailStatus||'PENDING')}</td><td><div style="display:flex;gap:5px;flex-wrap:wrap"><button class="secondary" onclick="viewTreatmentPlan('${esc(p.planId)}')">View</button><button class="secondary" onclick="editTreatmentPlan('${esc(p.planId)}')">Edit</button><button class="secondary" onclick="resendTreatmentPlan('${esc(p.planId)}')">Resend Email</button></div></td></tr>`).join(''):'<tr><td colspan="11">No treatment plans yet.</td></tr>'}
+    </tbody></table></div></div>
+    <div class="panel" style="margin-top:18px"><h3>Follow-up Payment Verification</h3><div class="table-wrap"><table class="table"><thead><tr><th>Payment ID</th><th>Patient</th><th>Service</th><th>Sessions</th><th>Amount</th><th>UTR</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    ${payments.length?payments.map(p=>{const plan=plans.find(x=>x.planId===p.planId)||{};return `<tr><td>${esc(p.paymentId)}</td><td>${esc(plan.name||p.patientId)}</td><td>${esc(plan.service||'—')}</td><td>${p.sessionCount}</td><td>₹${Number(p.amount||0).toLocaleString('en-IN')}</td><td><b>${esc(p.utr||'—')}</b></td><td>${pill(p.status)}</td><td>${String(p.status).toUpperCase()==='PAYMENT PENDING'?`<button class="primary" onclick="verifyTreatment('${esc(p.paymentId)}')">Verify Payment</button> <button class="danger" onclick="rejectTreatment('${esc(p.paymentId)}')">Reject</button>`:'—'}</td></tr>`}).join(''):'<tr><td colspan="8">No follow-up payments.</td></tr>'}
+    </tbody></table></div></div>`;
+  }catch(e){toast(e.message||'Unable to load treatment plans.')}
+}
+
+function viewTreatmentPlan(planId){
+  const p=(window.treatmentData||{}).plans?.find(x=>x.planId===planId); if(!p)return toast('Treatment plan not found.');
+  $('modalBox').innerHTML=`<div class="modal-head"><div><h3>Treatment Plan</h3><p style="margin:5px 0;color:var(--muted)">${esc(p.planId)}</p></div><button class="secondary" onclick="closeModal()">Close</button></div>
+  <div class="grid2"><div class="panel"><small>Patient</small><div><b>${esc(p.name)}</b><br>${esc(p.email)}<br>${esc(p.phone)}</div></div><div class="panel"><small>Service</small><div><b>${esc(p.service||'—')}</b><br>Source: ${esc(p.sourceAppointmentId)}</div></div><div class="panel"><small>Sessions</small><div><b>${p.sessions}</b> assigned · <b>${p.booked}</b> booked · <b>${p.remaining}</b> remaining</div></div><div class="panel"><small>Fee</small><div><b>₹${Number(p.fee||0).toLocaleString('en-IN')}</b> / session<br>Total ₹${Number(p.total||0).toLocaleString('en-IN')}</div></div></div>
+  <div class="panel" style="margin-top:12px"><b>Frequency:</b> ${esc(p.frequency?((p.frequency==='WEEKLY'?'Weekly':'Monthly')+(p.frequencyRequired?' (Required)':' (Optional)')):'No fixed frequency')}<br><b>Duration:</b> ${esc(p.duration||'45 minutes')}<br><b>Instructions:</b> ${esc(p.notes||'None')}<br><b>Email status:</b> ${esc(p.emailStatus||'PENDING')}</div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:15px"><button class="secondary" onclick="editTreatmentPlan('${esc(p.planId)}')">Edit Plan</button><button class="primary" onclick="resendTreatmentPlan('${esc(p.planId)}')">Resend Email</button></div>`;
+  $('modal').style.display='grid';
+}
+
+function editTreatmentPlan(planId){
+  const p=(window.treatmentData||{}).plans?.find(x=>x.planId===planId); if(!p)return toast('Treatment plan not found.');
+  $('modalBox').innerHTML=`<div class="modal-head"><div><h3>Edit Treatment Plan</h3><p style="margin:5px 0;color:var(--muted)">${esc(p.name)} · ${esc(p.service||'Physiotherapy')}</p></div><button class="secondary" onclick="closeModal()">Close</button></div>
+  <div class="grid2"><div class="field"><label>Number of sessions *</label><input id="etpSessions" type="number" min="${Math.max(1,p.booked)}" max="100" value="${p.sessions}"></div><div class="field"><label>Fee per session (₹) *</label><input id="etpFee" type="number" min="1" value="${p.fee}"></div></div>
+  <div class="grid2"><div class="field"><label>Frequency (optional)</label><select id="etpFrequency"><option value="">No fixed frequency</option><option value="WEEKLY" ${p.frequency==='WEEKLY'?'selected':''}>Weekly</option><option value="MONTHLY" ${p.frequency==='MONTHLY'?'selected':''}>Monthly</option></select></div><div class="field"><label>Duration</label><input id="etpDuration" value="${esc(p.duration||'45 minutes')}"></div></div>
+  <div class="field"><label><input id="etpRequired" type="checkbox" ${p.frequencyRequired?'checked':''} style="width:auto;margin-right:7px"> Enforce the selected frequency as a completion requirement</label></div>
+  <div class="field"><label>Notes / Instructions</label><textarea id="etpNotes" rows="4" placeholder="Optional instructions">${esc(p.notes||'')}</textarea></div>
+  <div class="panel" style="background:#f4faf7">Already booked: <b>${p.booked}</b>. The number of assigned sessions cannot be reduced below this.</div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:15px"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveEditedTreatmentPlan('${esc(p.planId)}')">Save & Email Patient</button></div>`;
+  $('modal').style.display='grid';
+}
+
+async function saveEditedTreatmentPlan(planId){
+  const frequency=$('etpFrequency').value; if($('etpRequired').checked&&!frequency)return toast('Select Weekly or Monthly before enforcing frequency.');
+  try{const r=await run('editTreatmentPlan',token(),{planId:planId,sessions:Number($('etpSessions').value),fee:Number($('etpFee').value),frequency:frequency,frequencyRequired:$('etpRequired').checked,duration:$('etpDuration').value.trim(),notes:$('etpNotes').value.trim()});closeModal();toast(r.message);await treatmentPlans();}catch(e){toast(e.message||'Unable to edit treatment plan.')}
+}
+
+async function resendTreatmentPlan(planId){try{const r=await run('resendTreatmentPlanEmail',token(),planId);toast(r.message);await treatmentPlans();}catch(e){toast(e.message||'Unable to send treatment plan email.')}}
+
+function openTreatmentPlan(sourceId){
+  const source=sourceId?appts.find(x=>x.id===sourceId):null;
+  const eligible=appts.filter(a=>String(a.paymentStatus||'').toUpperCase()==='PAID' && !['CANCELLED','REJECTED'].includes(String(a.status||'').toUpperCase()));
+  $('modalBox').innerHTML=`<div class="modal-head"><h3>Create Follow-up Treatment Plan</h3><button class="secondary" onclick="closeModal()">Close</button></div>
+    <p style="color:var(--muted)">Create a plan for <b>any paid service</b>. Frequency is optional. If the schedule must be completed within a weekly or monthly window, select a frequency and enable the requirement.</p>
+    <div class="field"><label>Paid Source Appointment *</label><select id="tpSource"><option value="">Select appointment</option>${eligible.map(a=>`<option value="${esc(a.id)}" ${source&&source.id===a.id?'selected':''}>${esc(a.name)} · ${esc(a.service)} · ${formatDateLabel(a.date)} · ${esc(a.time)} · ${esc(a.id)}</option>`).join('')}</select></div>
+    <div class="grid2"><div class="field"><label>Number of follow-up sessions *</label><input id="tpSessions" type="number" min="1" max="100" placeholder="e.g. 10"></div><div class="field"><label>Fee per session (₹) *</label><input id="tpFee" type="number" min="1" placeholder="e.g. 1500"></div></div>
+    <div class="grid2"><div class="field"><label>Frequency (optional)</label><select id="tpFrequency"><option value="">No fixed frequency</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option></select></div><div class="field"><label>Duration</label><input id="tpDuration" value="45 minutes"></div></div>
+    <div class="field"><label><input id="tpRequired" type="checkbox" style="width:auto;margin-right:7px"> Enforce this frequency as a completion requirement</label></div>
+    <div class="field"><label>Notes / Instructions</label><textarea id="tpNotes" rows="3" placeholder="Optional instructions for the patient"></textarea></div>
+    <div id="tpTotal" class="panel" style="background:#f4faf7;margin:12px 0">Enter sessions and fee to calculate total.</div>
+    <button class="primary" onclick="saveTreatmentPlan()">Create & Send Treatment Plan</button>`;
+  $('modal').style.display='grid';
+  const calc=()=>{const n=Number($('tpSessions').value||0),f=Number($('tpFee').value||0),freq=$('tpFrequency').value;$('tpTotal').innerHTML=n&&f?`<b>Total treatment plan:</b> ₹${(n*f).toLocaleString('en-IN')}<br><span style="color:var(--muted)">${n} sessions × ₹${f.toLocaleString('en-IN')} · ${freq?(freq==='WEEKLY'?'Weekly':'Monthly'):'No fixed frequency'}</span>`:'Enter sessions and fee to calculate total.'};
+  $('tpSessions').addEventListener('input',calc);$('tpFee').addEventListener('input',calc);$('tpFrequency').addEventListener('change',calc);$('tpRequired').addEventListener('change',calc);
+}
+
+async function saveTreatmentPlan(){const sourceId=$('tpSource').value,n=Number($('tpSessions').value||0),fee=Number($('tpFee').value||0),frequency=$('tpFrequency').value,required=$('tpRequired').checked,notes=$('tpNotes').value.trim();if(!sourceId||!n||!fee)return toast('Select an appointment, number of sessions and fee per session.');if(required&&!frequency)return toast('Select Weekly or Monthly before enforcing frequency.');try{const r=await run('createTreatmentPlan',token(),{sourceAppointmentId:sourceId,sessions:n,fee:fee,frequency:frequency,frequencyRequired:required,duration:$('tpDuration').value.trim(),notes:notes});toast(r.message);closeModal();await treatmentPlans()}catch(e){toast(e.message)}}
+
+function openTreatmentPaymentVerification(id){
+
+  const r=(window.treatmentData||{}).payments||[], p=r.find(x=>String(x.paymentId)===String(id)); const plans=(window.treatmentData||{}).plans||[], plan=p?plans.find(x=>x.planId===p.planId):null;
+
+  if(!p)return toast('Payment not found.');
+
+  $('modalBox').innerHTML=`<div class="modal-head"><div><h3>Payment Verification</h3><p style="margin:5px 0;color:var(--muted);font-size:12px">Match the follow-up UTR with the clinic bank statement before confirming the sessions.</p></div><button class="secondary" onclick="closeModal()">Close</button></div>
+
+    <div class="panel" style="background:#f4faf7;margin:14px 0"><small>Payment ID</small><div style="font-size:20px;font-weight:850;color:var(--teal)">${esc(p.paymentId)}</div></div>
+
+    <div class="grid2"><div class="panel"><small>Patient</small><div><b>${esc(plan&&plan.name||p.patientId)}</b><br>${esc(plan&&plan.email||p.email)}</div></div><div class="panel"><small>Service</small><div><b>${esc(plan&&plan.service||'—')}</b></div></div><div class="panel"><small>Sessions</small><div><b>${p.sessionCount}</b></div></div><div class="panel"><small>Amount</small><div><b>₹${p.amount.toLocaleString('en-IN')}</b></div></div></div>
+
+    <div class="panel" style="margin-top:12px"><small>Customer UTR / Transaction Reference</small><div style="font-size:18px;font-weight:800;margin-top:6px">${esc(p.utr||'NOT PROVIDED')}</div></div>
+
+    <div class="field"><label>Admin Notes</label><textarea id="tpVerifyNotes" rows="3" placeholder="Optional verification note">Follow-up payment verified by admin</textarea></div>
+
+    <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="secondary" onclick="closeModal()">Cancel</button><button class="danger" onclick="rejectTreatmentFromPanel('${esc(id)}')">Reject Payment</button><button class="primary" ${p.utr?'':'disabled'} onclick="confirmTreatmentFromPanel('${esc(id)}')">✓ Verify Payment & Confirm Sessions</button></div>`;
+
+  $('modal').style.display='grid';
+
+}
+
+async function confirmTreatmentFromPanel(id){const p=(window.treatmentData.payments||[]).find(x=>String(x.paymentId)===String(id));if(!p||!String(p.utr||'').trim())return toast('No UTR was submitted.');try{const r=await run('verifyTreatmentPayment',token(),id,$('tpVerifyNotes').value||'Follow-up payment verified by admin');closeModal();toast(r.message);treatmentPlans()}catch(e){toast(e.message)}}
+
+async function rejectTreatmentFromPanel(id){try{const r=await run('rejectTreatmentPayment',token(),id,$('tpVerifyNotes')?$('tpVerifyNotes').value:'Follow-up payment rejected by admin');closeModal();toast(r.message);treatmentPlans()}catch(e){toast(e.message)}}
+
+async function verifyTreatment(id){openTreatmentPaymentVerification(id)}
+
+async function rejectTreatment(id){openTreatmentPaymentVerification(id)}
+
+</script>
+
+
+
+<style>
+
+
+
+:root{--teal:#0f6258;--teal2:#1b7c70;--mint:#eef8f5;--gold:#caa85e;--ink:#244a46;--muted:#718985;--line:#dcebe6;--bg:#f5faf8;--red:#c95c5c;--yellow:#e0b64d;--green:#59a887}
+
+
+
+*{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:var(--ink)}button,input,select,textarea{font:inherit}.hidden{display:none!important}
+
+
+
+.top{background:linear-gradient(135deg,#0f6258,#1b7c70);color:white;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}.brand{display:flex;align-items:center;gap:14px}.brand img{width:56px;height:56px;object-fit:contain;background:white;border-radius:50%;padding:3px}.brand h1{font:700 23px Georgia,serif;margin:0}.brand small{opacity:.8}.logout{background:#fff;color:var(--teal);border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+
+
+
+.login{min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 20% 10%,#dff2ec,transparent 40%),var(--bg)}.login-card{width:min(430px,92vw);background:white;border:1px solid var(--line);border-radius:24px;padding:32px;box-shadow:0 18px 60px #0f62581c}.login-card img{width:90px;height:90px;object-fit:contain;display:block;margin:auto}.login-card h2{text-align:center;font:700 28px Georgia,serif;margin:15px 0 5px}.login-card p{text-align:center;color:var(--muted)}.field{margin:13px 0}.field label{display:block;font-size:13px;font-weight:700;margin-bottom:6px}.field input,.field select,.field textarea{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;outline:none;background:white}.primary{background:var(--teal);color:white;border:0;border-radius:10px;padding:12px 16px;font-weight:700;cursor:pointer}.secondary{background:#edf6f3;color:var(--teal);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}.danger{background:#fff0f0;color:#a83e3e;border:1px solid #f0caca;border-radius:10px;padding:9px 12px;font-weight:700;cursor:pointer}
+
+
+
+.app{display:none}.shell{display:grid;grid-template-columns:235px 1fr;min-height:calc(100vh - 97px)}.side{background:#fff;border-right:1px solid var(--line);padding:18px;position:sticky;top:97px;height:calc(100vh - 97px)}.nav{display:grid;gap:7px}.nav button{text-align:left;border:0;background:transparent;padding:12px;border-radius:11px;color:var(--ink);cursor:pointer;font-weight:700}.nav button.active,.nav button:hover{background:var(--mint);color:var(--teal)}.main{padding:25px;max-width:1500px;width:100%;margin:auto}.page-title{display:flex;justify-content:space-between;align-items:end;margin-bottom:20px}.page-title h2{font:700 30px Georgia,serif;margin:0}.page-title p{margin:5px 0 0;color:var(--muted)}.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:15px}.card{background:#fff;border:1px solid var(--line);border-radius:17px;padding:18px;box-shadow:0 6px 24px #0f625808}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:30px;margin-top:6px;color:var(--teal)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.panel{background:white;border:1px solid var(--line);border-radius:18px;padding:18px}.panel h3{margin:0 0 14px;font:700 19px Georgia,serif}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;font-size:13px}.table th,.table td{padding:11px;border-bottom:1px solid #edf3f1;text-align:left;white-space:nowrap}.table th{background:#f7fbfa;color:var(--muted);font-size:12px}.pill{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:11px;font-weight:800}.pill.green{background:#e8f6ef;color:#277457}.pill.yellow{background:#fff7df;color:#916c00}.pill.red{background:#fff0f0;color:#a83e3e}.pill.gray{background:#eef0f0;color:#6b7775}
+
+
+
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.tabs button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:9px 13px;cursor:pointer;font-weight:700}.tabs button.active{background:var(--teal);color:#fff}.calendar-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.calendar-title{font:700 21px Georgia,serif}.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:7px}.dow{padding:8px;text-align:center;color:var(--muted);font-size:12px;font-weight:800}.day{min-height:95px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:9px;cursor:pointer;position:relative}.day:hover{transform:translateY(-1px)}.day.empty{background:transparent;border:0;cursor:default}.day.closed{background:#f0f2f2}.day.full{background:#fff0f0;border-color:#efcaca}.day.partial{background:#fff8e2;border-color:#f1dda0}.day.normal{background:#eef9f4}.day b{font-size:14px}.day .dot{position:absolute;right:8px;top:8px;width:9px;height:9px;border-radius:50%}.day .appt{margin-top:25px;font-size:11px;color:var(--muted)}.legend{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0;font-size:12px}.legend span{display:flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.g{background:var(--green)}.y{background:var(--yellow)}.r{background:var(--red)}.w{background:#aeb8b6}
+
+
+
+.slot-list{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.slot{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fff}.slot.blocked{background:#fff0f0;border-color:#efcaca}.slot strong{display:block}.slot button{margin-top:8px}.rule{display:flex;justify-content:space-between;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px}.rule small{color:var(--muted)}
+
+
+
+.report-controls{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.report-kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:15px 0}.big{font-size:32px;font-weight:800;color:var(--teal)}.bill{max-width:850px;margin:auto;border:1px solid #d7e6e1;background:#fff;padding:42px;min-height:1050px;position:relative}.bill-head{display:flex;justify-content:space-between;border-bottom:2px solid var(--teal);padding-bottom:20px}.bill-head img{width:100px;height:100px;object-fit:contain}.bill h1{font:700 30px Georgia,serif;color:var(--teal);margin:0}.bill-footer{position:absolute;left:42px;right:42px;bottom:30px;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between}.bill-total{margin-top:30px;margin-left:auto;width:300px;border-top:2px solid var(--teal);padding-top:12px;font-size:20px;font-weight:800}.toast{position:fixed;right:22px;bottom:22px;background:#173f3a;color:white;padding:13px 16px;border-radius:11px;display:none;z-index:99}.modal{position:fixed;inset:0;background:#153f3a55;display:none;place-items:center;z-index:50}.modal-box{background:#fff;border-radius:20px;padding:22px;width:min(650px,92vw);max-height:90vh;overflow:auto}.modal-head{display:flex;justify-content:space-between;align-items:center}.modal-head h3{font:700 22px Georgia,serif;margin:0}.checks{display:flex;flex-wrap:wrap;gap:8px}.checks label{border:1px solid var(--line);padding:8px 10px;border-radius:9px;font-size:12px}
+
+
+
+@media(max-width:1000px){.cards{grid-template-columns:repeat(2,1fr)}.shell{grid-template-columns:1fr}.side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.grid2{grid-template-columns:1fr}}@media(max-width:650px){.top{padding:13px 15px}.brand h1{font-size:18px}.brand img{width:45px;height:45px}.cards{grid-template-columns:1fr}.main{padding:15px}.cal{gap:3px}.day{min-height:72px;padding:6px}.day .appt{font-size:9px;margin-top:17px}.slot-list{grid-template-columns:1fr}.bill{padding:22px;min-height:900px}.bill-footer{left:22px;right:22px}}
+
+
+
+</style>
+
+
+
+
+<style id="modern-admin-laptop-fix">
+/* BNB Admin — modern icons, reliable logo and laptop-first responsive layout */
+html, body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden !important;
+}
+body { min-width: 0 !important; }
+
+.bnb-logo {
+  display: block;
+  width: 50px;
+  height: 50px;
+  flex: 0 0 50px;
+}
+.login-card .bnb-logo {
+  width: 82px;
+  height: 82px;
+  margin: 0 auto 18px;
+}
+.brand .bnb-logo {
+  border-radius: 15px;
+  filter: drop-shadow(0 5px 14px rgba(23,63,59,.10));
+}
+
+.top {
+  width: 100%;
+  max-width: 100vw;
+  padding: 10px clamp(16px, 2.2vw, 30px);
+}
+.brand { min-width: 0; }
+.brand > div { min-width: 0; }
+.brand h1, .brand small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shell {
+  width: 100%;
+  max-width: 100vw;
+  min-width: 0;
+  grid-template-columns: 220px minmax(0, 1fr) !important;
+}
+.side {
+  min-width: 0;
+  width: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.main {
+  min-width: 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  padding: 28px clamp(20px, 2.5vw, 38px) 42px !important;
+  overflow-x: hidden;
+}
+
+.nav { gap: 4px; }
+.nav button {
+  width: 100%;
+  min-width: 0;
+  padding: 11px 12px !important;
+  gap: 11px !important;
+  border-radius: 13px;
+}
+.nav-icon {
+  width: 21px;
+  height: 21px;
+  flex: 0 0 21px;
+  display: inline-grid;
+  place-items: center;
+  color: currentColor;
+}
+.nav-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.nav-icon svg path:first-child:not(:only-child) { fill: none; }
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cards {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+.card { min-width: 0; }
+.grid2 {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr) !important;
+  min-width: 0;
+}
+.grid2 > * { min-width: 0; }
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.page-title { min-width: 0; }
+.page-title > * { min-width: 0; }
+.panel { min-width: 0; }
+.cal { min-width: 0; }
+
+@media (max-width: 1280px) {
+  .shell { grid-template-columns: 205px minmax(0, 1fr) !important; }
+  .side { width: 205px; }
+  .main { padding: 24px 22px 36px !important; }
+  .cards { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+}
+
+@media (max-width: 900px) {
+  .shell { display: block !important; }
+  .side {
+    position: sticky;
+    top: 76px;
+    width: 100%;
+    height: auto;
+    z-index: 20;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px;
+  }
+  .side:before { display: none; }
+  .nav {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .nav button {
+    width: auto;
+    flex: 0 0 auto;
+  }
+  .nav-label { white-space: nowrap; }
+  .main { padding: 22px 16px 32px !important; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .grid2 { grid-template-columns: 1fr !important; }
+}
+
+@media (max-width: 560px) {
+  .top { height: 68px; }
+  .shell { min-height: calc(100vh - 68px); }
+  .side { top: 68px; }
+  .brand .bnb-logo { width: 44px; height: 44px; flex-basis: 44px; }
+  .brand h1 { font-size: 15px; }
+  .brand small { font-size: 9px; }
+  .logout { padding: 8px 11px; }
+  .cards { grid-template-columns: 1fr !important; }
+  .page-title { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .page-title h2 { font-size: 27px; }
+  .payment-grid, .slot-list, .report-kpis { grid-template-columns: 1fr !important; }
+}
+
+@media (min-width: 901px) and (max-height: 800px) {
+  .top { height: 68px; }
+  .shell { min-height: calc(100vh - 68px); }
+  .side { top: 68px; height: calc(100vh - 68px); padding-top: 16px; }
+  .main { padding-top: 22px !important; padding-bottom: 30px !important; }
+  .page-title { margin-bottom: 18px; }
+  .page-title h2 { font-size: 29px; }
+  .card { padding: 15px; }
+  .stat { min-height: 94px; }
+  .stat strong { font-size: 27px; margin-top: 10px; }
+  .panel { padding: 17px; }
+}
+</style>
+
+
+<style id="supplied-menu-icons-and-logo-fix">
+.image-nav-icon{
+  width:32px !important;
+  height:32px !important;
+  flex:0 0 32px !important;
+  display:flex !important;
+  align-items:center;
+  justify-content:center;
+  background:transparent !important;
+  border:0 !important;
+}
+.image-nav-icon img{
+  width:30px;
+  height:30px;
+  object-fit:contain;
+  display:block;
+}
+.login-card > img{
+  width:86px !important;
+  height:86px !important;
+  object-fit:contain !important;
+  display:block !important;
+  margin:0 auto 18px !important;
+  border-radius:50%;
+  background:#fff;
+  padding:3px;
+}
+.brand > img{
+  width:54px !important;
+  height:54px !important;
+  object-fit:contain !important;
+  border-radius:50%;
+  background:#fff;
+  padding:3px;
+}
+@media (max-width:560px){
+  .image-nav-icon{width:28px !important;height:28px !important;flex-basis:28px !important}
+  .image-nav-icon img{width:27px;height:27px}
+}
+</style>
+
+
+<style id="bnb-admin-no-horizontal-scroll-fix">
+/* Keep every Admin view inside the viewport on desktop and mobile. */
+html, body, #app, .shell, .main, .view, .panel { max-width:100%; min-width:0; }
+html, body { overflow-x:hidden !important; }
+.table-wrap { width:100% !important; max-width:100% !important; overflow-x:hidden !important; overflow-y:visible !important; }
+.table-wrap .table { width:100% !important; min-width:0 !important; max-width:100% !important; table-layout:fixed !important; }
+.table th, .table td { white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal; vertical-align:top; padding:9px 7px !important; }
+.table th { font-size:11px !important; }
+.table td { font-size:12px !important; }
+.table td button { max-width:100%; white-space:normal !important; overflow-wrap:anywhere; line-height:1.25; }
+.table td > div { min-width:0; max-width:100%; flex-wrap:wrap !important; }
+#appointments .table { table-layout:fixed !important; }
+#appointments .table th:nth-child(1), #appointments .table td:nth-child(1) { width:12%; }
+#appointments .table th:nth-child(2), #appointments .table td:nth-child(2) { width:10%; }
+#appointments .table th:nth-child(3), #appointments .table td:nth-child(3) { width:8%; }
+#appointments .table th:nth-child(4), #appointments .table td:nth-child(4) { width:7%; }
+#appointments .table th:nth-child(5), #appointments .table td:nth-child(5) { width:6%; }
+#appointments .table th:nth-child(6), #appointments .table td:nth-child(6) { width:9%; }
+#appointments .table th:nth-child(7), #appointments .table td:nth-child(7) { width:7%; }
+#appointments .table th:nth-child(8), #appointments .table td:nth-child(8) { width:8%; }
+#appointments .table th:nth-child(9), #appointments .table td:nth-child(9) { width:5%; }
+#appointments .table th:nth-child(10), #appointments .table td:nth-child(10) { width:11%; }
+#appointments .table th:nth-child(11), #appointments .table td:nth-child(11) { width:17%; }
+@media (min-width:721px) {
+  #appointments .table thead { display:table-header-group !important; }
+  #appointments .table tbody { display:table-row-group !important; }
+  #appointments .table tr { display:table-row !important; }
+  #appointments .table td { display:table-cell !important; }
+  #appointments .table td:before { content:none !important; display:none !important; }
+}
+@media (min-width:721px) and (max-width:1100px) {
+  #appointments .table th, #appointments .table td { padding:7px 4px !important; font-size:10px !important; }
+  #appointments .table th { font-size:9px !important; }
+  .main { padding-left:12px !important; padding-right:12px !important; }
+}
+@media (max-width:720px) {
+  .table-wrap { overflow:visible !important; }
+  .table { min-width:0 !important; }
+}
+</style>
+
+<script>(function(){try{var p=new URLSearchParams(location.search);if(p.get('page')==='patient'){location.replace('./patient.html');return;}if(p.get('page')==='admin'){location.replace('./admin.html');return;}if(p.get('additionalPayment')==='1'){location.replace('./additionalPayment.html'+location.search);return;}}catch(e){}})();</script>
+<script src="./bridge-client.js"></script>
+</head>
+
+
+
+<body>
+
+
+
+<div id="login" class="login"><div class="login-card"><img src="https://drive.google.com/thumbnail?id=1TqpPo05Q6_XFUj-CYmgBzIUfsipYR30n&sz=w600"><h2>Doctor / Admin Login</h2><p>Bump N Beyond Physio</p><div class="field"><label>Email</label><input id="user" type="email" autocomplete="username" placeholder="doctor\@example.com"></div><div class="field"><label>Password</label><input id="pass" type="password"></div><button class="primary" style="width:100%" onclick="login()">Sign in</button><p style="font-size:12px;margin-top:16px">Each doctor has a unique email and password. New doctor accounts can be created by the Super Admin.</p></div></div>
+
+
+
+<div id="app" class="app"><header class="top"><div class="brand"><img src="https://drive.google.com/thumbnail?id=1TqpPo05Q6_XFUj-CYmgBzIUfsipYR30n&sz=w600"><div><h1>Bump N Beyond Physio</h1><small>Doctor & Clinic Administration</small></div></div><button type="button" id="adminMenuToggle" class="admin-menu-toggle" aria-label="Open admin menu" aria-expanded="false" onclick="toggleAdminMobileMenu()"><span></span><span></span><span></span></button><button class="logout" onclick="logout()">Logout</button></header><div class="shell"><aside class="side"><nav class="nav"><button data-page="dashboard" class="active"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,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" alt=""></span><span class="nav-label">Dashboard</span></button><button data-page="calendar"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,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" alt=""></span><span class="nav-label">Slot Calendar</span></button><button data-page="appointments"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,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" alt=""></span><span class="nav-label">Appointments</span></button><button data-page="reviews"><span class="nav-icon" style="font-size:22px;line-height:1">★</span><span class="nav-label">Reviews</span></button><button data-page="treatmentPlans"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEEAAABHCAYAAABYripYAAAIuklEQVR42u2baVSTZxbHLwFCQhKEkAABAkkISQiEXcCNIirFpYiDNiDiXhCFAnUdrVZcKoseRQUtsiiyTEEWlR2UWkctUkWtHeeMh3M8XZwR7XG+tAPO6H++zTmzMBUSSFDu1/c87/u/v+e+9z4r0YRN2IRN2IRN2H+aiaE+XH6pHTXn6ojP51NAQACl/CbG5K0iv6MgD2yFDMIAP5BEDKZchqjUdXhrIkE2LRjP/vqcTEwZtOR9LbnKpFRVXkFPnjwhlbuCdu7YTpEa/zc3KuYtXwahtxokEqC4s/lfPd/+p28RvioelkoZfCJno6y1CW+c8yWN50EsJjhSF8yJj0Vzb/f/dPKDXdvg4OMBW6U7Erdve3NArPp4KzhyCcjWGjHJib/q2OmmBpCFObgSFyxYuRyfd7aPXxgpB/ZAGjoVDFcnyEOn4bML9cNyJjXzE9go3UEW5mjvvj5+QLTcuonMwgIIfT3BUUjBUbkh/VAWOu7fGZETTd03UFhbM+oA9JKFTzWfR1dXF3X39FB/fz/ZTOLRrFkzSavVUqQmyOCZvqazGTwOlyKnhOpXS+OtbqTnHIBjcADI2QEmLiK4h03DlrwcXP5jr9GEb+HFWpCFKcztrPWnKa+6HLEbP4SdnxeYEjHYbhL4RM5GVskpo/tvj1SehWJGMIQqOapaL+iuL7uqFCyFC3iebjCVOMHr3XDsOpmP2utXjTJpVV1qB3EswJW54nBZie4aN+Zlg+UhganMEZLQIOTVfW7U2brpTg88I2aCJXXB+l0f6641IkELjocUU2KjcaSu0uhLVes3X4OndodjsD/SsvbrrregphJkZw2yYo2bOh2iXQSeWgHPOeGvrZnx/x52XOqkSdbWdKrs7LgAEJqgRV9fH0XMmk3fdlzWvRy23P4KIl81ZscvGRdREJ2xHk5TA+H7XuSw9Q4ZCQ8fPqT+/n6a+U6Y0QNIPrgfV69dIyaTSbnZ2aQ3CI8ePaKXg4Pk6Oho1AAyjuaipKSEOBwOfZZfQHPUPiZ6g/CXx38mYpgSi8UyWgBHaipRVFRE9OoV7dudSRGevvodFmtTksCw56PxhnEOhnLPlICrcIO1xgPlXbpNt82GesC15NCrvw3QixcvjA7AuS+7oF0aRy+f/UR5padp2cwIk1GBYGlpSTQ4SAM//2JUAMo6WrA6MZGEQjtat20HpcXF6/wLDAlBJBIRWbJp4O/GEwmtd28jNi6OXr58SYuiFtLulFS95IAhE6ONQEg0OEg/Pn1qFAAu3O7F1m3baXBggCLCwulE5l69JcEhIVjb8om4PHr60zOjgLDn0330/eMfafr06VR/qkivVWBICAIbPglFjtTX12dwAAuSk3C39w5Z86yoo6xibFeqpsREQzYjxKAlcsO+TPDUKoiCAlHW0Tr2WmIzUmEhE+Pc1UsGAfHJyXzYatRgOItQ1HzRMJ3xUe4BmIlF+O3Rg2Mu4ERtNdgyVzCcRcivqzFcNBZfbICFxBnB0QteW8T85bHILMjTSXRFRxtUM0PBkUv1szCic+Z0soeZq+NrC4lPTwbDno+lGRtGJL7u91dALHNw3WXYeijXOIbs4iB/mMvEqL957bUFacJngARW+GDX8PcTw5ZqwZFLEZOcZDxzlk2HssFRybGzsGBYopakJMJGLUfCtozXbucSMhl8Lw9o01N1AtDZ243jFaX6g9hy6yYs5BJEbRh+z4QuXgSO3AXazb/u1MLkRFhrPMBVuOksPn3/bpCFqX43c8MS4iDw80Hn/fvDfmnA3AjwNQok7Ng4ZNv1e3dD6OMFn7kRehHNV8rAdLJDRVuL/iDsLj4FEjshPStrRC+NWBEPrlKGBUmr/6v98i1bYKNWgiOXokEPGzlZZ4rBc5PAXqPWb05pvtMLchbDOTBwRC/uvNcLgY8aXA93zF23Bscb65FTXQHvqPmwD/QHw8kBRRca9CL6/bQNMBOLsPXIKIxtAqMXwVwsRvH5kYtdmLoBbC8V2L6esJ0eBEFIIEgixtnONr0Ibui+Dmu1EgJvz9GpLMfqG8CSSBCduFanD2w+fhgkdQIJeAhbk4C2P9zTm+BNh3PAlDpjxfbNo1de561dAwuJGOXtrca5FyHkga10Re31L4aljzGsKhEWRqZmZlReVWF0/n+Uux+THBzIWeRIMVPDRne6HRT9HohthhMXao0mGppu34S9vwYkmITSEZxDYAy3wbsREUQ2NnS2wniiob7hPD1//pyiYhbTqsiosVl0CVkSDZZSipyqMoNHQ+nlNrAUckimBqOp+6ux03PmchusNEqwVTK03Dfs+SSeRg2mXIb0nOyx16HdlAaelxKzVi4zGISkA5/CISQYfG8fw3WE3/xIcD3csetk/piLONZQB0uVCnxfX1Rd+dJwEMpam2GtVsLKU4nClrFdAzSTSWCj8UZS5h7DV6nj1b8DWyEDcZgovTw2g6jwVcsgDPDDnBXLjWfQlpazH1YaJVRzw//tCP+oAEiIxeTFC7E4I9X4Rq1pBw+A4+UOU7kYxxr0vzrc9c1dBC2cD3FIAKYuicYlPc459GqxWzNgpVHC2keNvaeL9Cay+uoXsPfVwHmyP2YnxKH1do9xn6PaW1YEhtQZHLU75icnoeneHZ0E7yw4CofJfhD4aRCb8eH4OfJ/vLEewpBAcDRe4Pv7IOvM8I/Vtn59ExHLlsJSLgVPo8bO4sLxd/mj9cE9RCauBVvlBp5SjrmrV+BEbfWvOtJ44ypWb9kER28vWEpcoAibgarrV0YVwKhPNk6cq8Lpykrq7ukhBoNBQltbmjdvHoUEBZOTg4he4R/0y88D9ODBAyopKqbvv/uOWGw2OTg4UEpKCm1aufrNuRm3szAfXA85yM4GJs72IJEAHLkETFcnmDs5gNhMkIU5yJKFzPxjYxr6Y065sqsNj3/4gfr6+mhgYIBYLBZZcXkkFApJpVDSgikz3q6bshM2YRM2YRNmpPZPYr3QdXwcmnAAAAAASUVORK5CYII=" alt=""></span><span class="nav-label">Treatment Plans</span></button><button data-page="stats"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,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" alt=""></span><span class="nav-label">Stats</span></button><button data-page="bills"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,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" alt=""></span><span class="nav-label">Generate Bill</span></button><button data-page="doctors" id="doctorsNav"><span class="nav-icon image-nav-icon"><img src="data:image/png;base64,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" alt=""></span><span class="nav-label">Doctors</span></button></nav></aside><main class="main"><section id="dashboard" class="view"></section><section id="calendar" class="view hidden"></section><section id="appointments" class="view hidden"></section><section id="reviews" class="view hidden"></section><section id="treatmentPlans" class="view hidden"></section><section id="stats" class="view hidden"></section><section id="bills" class="view hidden"></section><section id="doctors" class="view hidden"></section></main></div></div>
+
+
+
+<div id="modal" class="modal"><div class="modal-box" id="modalBox"></div></div><div id="toast" class="toast"></div>
+
+
+
+<script>
+
+
+
+let appts=[], currentMonth=new Date().getMonth()+1,currentYear=new Date().getFullYear(),reportChart;
+
+
+
+const $=id=>document.getElementById(id); const run=(fn,...args)=>new Promise((res,rej)=>google.script.run.withSuccessHandler(res).withFailureHandler(e=>rej(e))[fn](...args));
+
+
+
+function toast(m){$('toast').textContent=m;$('toast').style.display='block';setTimeout(()=>$('toast').style.display='none',3000)}
+
+
+
+async function login(){
+  const btn=document.querySelector('#login button[onclick="login()"]');
+  if(btn){btn.disabled=true;btn.textContent='Signing in…';}
+  try{
+    const r=await run('verifyDoctorLogin',$('user').value.trim(),$('pass').value);
+    if(!r.success){toast(r.message);return;}
+    sessionStorage.setItem('bnbToken',r.token);sessionStorage.setItem('bnbDoctor',JSON.stringify(r.doctor));
+    showApp();
+  }catch(e){toast(e.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='Sign in';}}
+}
+
+
+
+function logout(){
+  sessionStorage.removeItem('bnbToken');
+  sessionStorage.removeItem('bnbDoctor');
+  appts=[];
+  window.adminAppointmentCacheAt=0;
+  if(window.jitsiApi){try{window.jitsiApi.dispose();}catch(e){} window.jitsiApi=null;}
+  $('app').style.display='none';
+  $('login').style.display='grid';
+  $('user').value='';
+  $('pass').value='';
+  $('user').focus();
+  window.scrollTo(0,0);
+}
+
+function currentDoctor(){try{return JSON.parse(sessionStorage.getItem('bnbDoctor')||'null')}catch(e){return null}}
+function token(){return sessionStorage.getItem('bnbToken')||''}
+
+async function showApp(){
+  const d=currentDoctor();
+  if(!d||!token()){ $('app').style.display='none'; $('login').style.display='grid'; return; }
+  $('login').style.display='none';
+  $('app').style.display='block';
+  $('doctorsNav').style.display=String(d.role).toUpperCase()==='SUPER_ADMIN'?'block':'none';
+  $('app').querySelector('.top small').textContent=d.name+' · '+d.role;
+  // Show immediate feedback while dashboard data loads from Sheets.
+  $('dashboard').innerHTML='<div class="page-title"><div><h2>Dashboard</h2><p>Loading your clinic overview…</p></div></div><div class="panel"><div class="loading-bar"></div></div>';
+  loadPage('dashboard').catch(e=>toast(e.message||'Dashboard could not be loaded.'));
+
+}
+
+if(sessionStorage.getItem('bnbToken'))showApp();
+
+function toggleAdminMobileMenu(force){
+  const side=document.querySelector('.side'),btn=$('adminMenuToggle');
+  if(!side||!btn)return;
+  const open=typeof force==='boolean'?force:!side.classList.contains('mobile-open');
+  side.classList.toggle('mobile-open',open);btn.classList.toggle('is-open',open);btn.setAttribute('aria-expanded',String(open));
+}
+ document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{loadPage(b.dataset.page);if(window.matchMedia('(max-width: 720px)').matches)toggleAdminMobileMenu(false)});
+
+async function loadPage(page){
+  if(page==='doctors'&&String((currentDoctor()||{}).role).toUpperCase()!=='SUPER_ADMIN')return toast('Super Admin access required.');
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
+  document.querySelectorAll('.view').forEach(v=>v.classList.add('hidden'));
+  $(page).classList.remove('hidden');
+  if(page==='dashboard')return dashboard();
+  if(page==='calendar')return calendar();
+  if(page==='appointments')return appointments();
+  if(page==='reviews')return reviewManagement();
+  if(page==='treatmentPlans')return treatmentPlans();
+  if(page==='stats')return stats();
+  if(page==='bills')return bills();
+  if(page==='doctors')return doctors();
+}
+
+
+
+async function dashboard(){const s=await run('getDashboardSummary',token());$('dashboard').innerHTML=`<div class="page-title"><div><h2>Dashboard</h2><p>Today’s clinic overview and patient activity.</p></div></div><div class="cards"><div class="card stat"><small>Today</small><strong>${s.today}</strong></div><div class="card stat"><small>Pending payments</small><strong>${s.pendingPayments}</strong></div><div class="card stat"><small>Confirmed</small><strong>${s.confirmed}</strong></div><div class="card stat"><small>Attended</small><strong>${s.attended}</strong></div><div class="card stat"><small>Group bookings</small><strong>${s.groupBookings}</strong></div></div><div class="grid2"><div class="panel"><h3>Quick actions</h3><div style="display:flex;gap:9px;flex-wrap:wrap"><button class="primary" onclick="loadPage('calendar')">Manage slots</button><button class="secondary" onclick="loadPage('stats')">Clinic stats</button><button class="secondary" onclick="loadPage('bills')">Generate bill</button></div></div><div class="panel"><h3>Attendance rule</h3><p style="color:var(--muted);margin:0">Mark a completed patient visit as <b>ATTENDED</b>. Weekly, monthly and yearly reports use ATTENDED/COMPLETED appointments.</p></div></div>`}
+
+
+
+async function loadAppointmentsCached(force){
+  const now=Date.now();
+  if(!force && appts.length && now-(window.adminAppointmentCacheAt||0)<30000) return appts;
+  const box=document.querySelector('.view:not(.hidden) .page-title');
+  if(box && box.querySelector('h2')) box.querySelector('h2').insertAdjacentHTML('afterend','<span id="adminLoading" class="admin-loading">Loading…</span>');
+  try { appts=await run('getAppointments',token()); window.adminAppointmentCacheAt=Date.now(); return appts; }
+  finally { const l=$('adminLoading'); if(l) l.remove(); }
+}
+
+function appointmentDateKey(a){
+  const v=String(a.date||'').trim();
+  let m=v.match(/^(\d{4})-(\d{2})-(\d{2})$/); if(m)return Number(m[1]+m[2]+m[3]);
+  m=v.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})$/);
+  if(m){const d=new Date(`${m[2]} ${m[1]}, ${m[3]} 00:00`);if(!isNaN(d))return d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();}
+  const d=new Date(v);return isNaN(d)?0:d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+}
+function appointmentTimeKey(a){
+  const s=String(a.time||'').trim().toUpperCase();const m=s.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/);if(!m)return 0;
+  let h=Number(m[1]),min=Number(m[2]);if(m[3]==='PM'&&h<12)h+=12;if(m[3]==='AM'&&h===12)h=0;return h*60+min;
+}
+function appointmentStatus(a){return String(a.status||'').trim().toUpperCase()}
+function appointmentPayment(a){return String(a.paymentStatus||'').trim().toUpperCase()}
+function appointmentSection(mode){
+  const all=appts.slice();
+  const pending=all.filter(a=>appointmentPayment(a).includes('PENDING')&&!['CANCELLED','REJECTED'].includes(appointmentStatus(a)));
+  const upcoming=all.filter(a=>!appointmentPayment(a).includes('PENDING')&&!['CANCELLED','REJECTED','ATTENDED','COMPLETED'].includes(appointmentStatus(a)));
+  const completed=all.filter(a=>['ATTENDED','COMPLETED'].includes(appointmentStatus(a)));
+  const cancelled=all.filter(a=>['CANCELLED','REJECTED'].includes(appointmentStatus(a))||appointmentPayment(a)==='REJECTED');
+  const asc=(a,b)=>appointmentDateKey(a)-appointmentDateKey(b)||appointmentTimeKey(a)-appointmentTimeKey(b);
+  const desc=(a,b)=>appointmentDateKey(b)-appointmentDateKey(a)||appointmentTimeKey(b)-appointmentTimeKey(a);
+  let list=[], title='', description='';
+  if(mode==='completed'){list=completed.sort(desc);title='Appointment History';description='Attended and completed appointments, newest first.';}
+  else if(mode==='cancelled'){list=cancelled.sort(desc);title='Cancelled / Rejected History';description='Cancelled appointments and rejected bookings retained for reference.';}
+  else if(mode==='upcoming'){list=upcoming.sort(asc);title='Upcoming Appointments';description='Confirmed and active appointments, earliest date and time first.';}
+  else {list=pending.sort((a,b)=>appointmentDateKey(a)-appointmentDateKey(b)||appointmentTimeKey(a)-appointmentTimeKey(b));title='Pending Verification';description='Payments awaiting admin approval — prioritised for action.';}
+  const rows=list.map(a=>`<tr><td><b>${esc(a.name)}</b><br><small>${esc(a.email)}</small></td><td>${esc(a.service)}</td><td>${formatDateLabel(a.date)}</td><td>${esc(a.time)}</td><td>₹${esc(a.amount||'—')}</td><td><strong class="utr-cell">${esc(a.paymentReference||'NOT PROVIDED')}</strong></td><td>${pill(a.paymentStatus)}</td><td>${pill(a.status)}</td><td>${a.meetingLink?`<button class="link-button" onclick="openJitsi('${esc(a.id)}')">Join</button>`:'—'}</td><td>${a.calendarReminderStatus?`<span class="pill green">${esc(a.calendarReminderStatus)}</span>`:`<button class="secondary" onclick="syncCalendar('${esc(a.id)}')">Add 30-min reminder</button>`}</td><td><div style="display:flex;gap:5px;flex-wrap:wrap">${appointmentPayment(a).includes('PENDING')?`<button class="primary" onclick="openPaymentVerification('${esc(a.id)}')">Verify / Reject</button>`:''}${!['CANCELLED','REJECTED','ATTENDED','COMPLETED'].includes(appointmentStatus(a))?`<button class="secondary" onclick="attend('${esc(a.id)}')">Mark Attended</button>`:''}${String((currentDoctor()||{}).role).toUpperCase()==='SUPER_ADMIN'?`<button class="secondary" onclick="assignDoctor('${esc(a.id)}')">Assign Doctor</button>`:''}${appointmentPayment(a)==='PAID'&&!['CANCELLED','REJECTED'].includes(appointmentStatus(a))?`<button class="secondary" onclick="openTreatmentPlan('${esc(a.id)}')">Create Treatment Plan</button>`:''}<button class="secondary" onclick="openBill('${esc(a.id)}')">Bill</button></div></td></tr>`).join('');
+  return `<div class="panel"><div class="page-title"><div><h3>${title}</h3><p>${description}</p></div><span class="pill">${list.length} record${list.length===1?'':'s'}</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Patient</th><th>Service</th><th>Date</th><th>Time</th><th>Amount</th><th>UTR / Transaction Ref.</th><th>Payment</th><th>Status</th><th>Jitsi</th><th>Calendar</th><th>Actions</th></tr></thead><tbody>${rows||'<tr><td colspan="11">No appointments in this section.</td></tr>'}</tbody></table></div></div>`;
+}
+async function appointments(force){
+  $('appointments').innerHTML='<div class="page-title"><div><h2>Appointments</h2><p>Loading appointments…</p></div></div><div class="panel"><div class="loading-bar"></div></div>';
+  try{
+    await loadAppointmentsCached(!!force);
+    $('appointments').innerHTML=`<div class="page-title"><div><h2>Appointments</h2><p>Pending payments and upcoming visits stay here. Completed and cancelled records are kept in their histories.</p></div><button class="secondary" onclick="appointments(true)">↻ Refresh</button></div><div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 18px"><button class="primary" id="apptTabPending" onclick="showAppointmentSection('pending')">Pending Verification</button><button class="secondary" id="apptTabUpcoming" onclick="showAppointmentSection('upcoming')">Upcoming Appointments</button><button class="secondary" id="apptTabCompleted" onclick="showAppointmentSection('completed')">Appointment History</button><button class="secondary" id="apptTabCancelled" onclick="showAppointmentSection('cancelled')">Cancelled / Rejected</button></div><div id="appointmentSectionBody"></div>`;
+    showAppointmentSection('pending');
+  }catch(e){toast(e.message||'Unable to load appointments.');}
+}
+function showAppointmentSection(mode){
+  const modes=['pending','upcoming','completed','cancelled'];
+  modes.forEach(m=>{const b=$('apptTab'+m.charAt(0).toUpperCase()+m.slice(1));if(b)b.className=m===mode?'primary':'secondary';});
+  const body=$('appointmentSectionBody');if(body)body.innerHTML=appointmentSection(mode);
+}
+
+function openPaymentVerification(id){
+  const a=appts.find(x=>String(x.id)===String(id));
+  if(!a)return toast('Appointment not found.');
+  $('modalBox').innerHTML=`<div class="modal-head"><div><h3>Payment Verification</h3><p style="margin:5px 0;color:var(--muted);font-size:12px">Match the patient's UTR with the clinic bank statement before confirming the appointment.</p></div><button class="secondary" onclick="closeModal()">Close</button></div><div class="panel" style="background:#f4faf7;margin:14px 0"><small>Booking ID</small><div style="font-size:20px;font-weight:850;color:var(--teal)">${esc(a.id)}</div></div><div class="grid2"><div class="panel"><small>Patient</small><div><b>${esc(a.name)}</b><br>${esc(a.email)}<br>${esc(a.phone)}</div></div><div class="panel"><small>Service</small><div><b>${esc(a.service)}</b><br>${formatDateLabel(a.date)} · ${esc(a.time)}</div></div><div class="panel"><small>Amount</small><div><b>₹${esc(a.amount||'—')}</b></div></div><div class="panel"><small>Payment Status</small><div>${pill(a.paymentStatus)}</div></div></div><div class="utr-verification-box"><small>Customer UTR / Transaction Reference</small><div>${esc(a.paymentReference||'NOT PROVIDED')}</div></div><div class="field"><label>Admin Notes</label><textarea id="paymentVerifyNotes" rows="3" placeholder="Optional verification note"></textarea></div><div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="secondary" onclick="closeModal()">Cancel</button><button class="danger" onclick="rejectFromPanel('${esc(id)}')">Reject Payment</button><button class="primary" ${a.paymentReference?'':'disabled'} onclick="verifyFromPanel('${esc(id)}')">✓ Verify Payment & Confirm</button></div>`;
+  $('modal').style.display='grid';
+}
+
+async function verifyFromPanel(id){
+  const a=appts.find(x=>String(x.id)===String(id));
+  if(!a||!String(a.paymentReference||'').trim())return toast('No UTR / transaction reference was submitted.');
+  try{const r=await run('verifyPayment',id,$('paymentVerifyNotes').value||'Payment verified by admin');closeModal();toast(r.message+(r.meetingLink?' Jitsi link created.':''));await appointments(true);}catch(e){toast(e.message)}
+}
+
+async function rejectFromPanel(id){
+  try{await run('rejectPayment',id,$('paymentVerifyNotes')?$('paymentVerifyNotes').value:'Payment rejected by admin');closeModal();toast('Payment rejected.');await appointments(true);}catch(e){toast(e.message)}
+}
+
+async function verify(id){openPaymentVerification(id)}
+async function reject(id){openPaymentVerification(id)}
+
+
+
+async function syncCalendar(id){try{const r=await run('syncAppointmentCalendar',token(),id);toast(r.message);await appointments(true)}catch(e){toast(e.message||'Unable to create calendar reminder.')}}
+
+function pill(v){let x=String(v||'').toUpperCase();let c=x.includes('PAID')||x==='CONFIRMED'||x==='ATTENDED'||x==='COMPLETED'?'green':x.includes('PENDING')?'yellow':x==='CANCELLED'||x==='REJECTED'?'red':'gray';return `<span class="pill ${c}">${esc(v||'—')}</span>`}
+
+
+
+async function verify(id){try{const r=await run('verifyPayment',id,'Payment verified by admin');toast(r.message+(r.meetingLink?' Jitsi link created.':''));appointments()}catch(e){toast(e.message)}}
+
+
+
+
+
+
+
+async function reject(id){try{await run('rejectPayment',id,'Payment rejected by admin');toast('Payment rejected.');appointments()}catch(e){toast(e.message)}}
+
+
+
+async function attend(id){try{await run('markAppointmentAttended',id,'Patient attended consultation');toast('Marked as attended.');appointments()}catch(e){toast(e.message)}}
+
+
+
+async function doctors(){
+
+
+
+  const ds=await run('getDoctors',token());
+
+
+
+  $('doctors').innerHTML=`<div class="page-title"><div><h2>Doctor Accounts</h2><p>Only the Super Admin can create, activate, deactivate and reset doctor accounts.</p></div><button class="primary" onclick="openDoctorModal()">+ Add Doctor</button></div><div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>Doctor</th><th>Qualification</th><th>Specialization</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>${ds.map(d=>`<tr><td><b>${esc(d.name)}</b><br><small>${esc(d.id)}</small></td><td>${esc(d.qualification)}</td><td>${esc(d.specialization)}</td><td>${esc(d.email)}</td><td>${esc(d.role)}</td><td>${pill(d.status)}</td><td><div style="display:flex;gap:5px;flex-wrap:wrap">${d.role!=='SUPER_ADMIN'?`<button class="secondary" onclick="toggleDoctor('${d.id}','${d.status}')">${String(d.status).toUpperCase()==='ACTIVE'?'Deactivate':'Activate'}</button><button class="secondary" onclick="resetDoctor('${d.id}')">Reset Password</button>`:'<span class="pill green">Main Account</span>'}</div></td></tr>`).join('')}</tbody></table></div></div>`;
+
+
+
+}
+
+
+
+function openDoctorModal(){
+
+
+
+  $('modal').style.display='grid';
+
+
+
+  $('modalBox').innerHTML=`<div class="modal-head"><h3>Add Doctor</h3><button class="secondary" onclick="closeModal()">Close</button></div><div class="field"><label>Doctor Name</label><input id="dn" placeholder="Dr. Example"></div><div class="grid2"><div class="field"><label>Qualification</label><input id="dq" placeholder="BPT / MPT"></div><div class="field"><label>Specialization</label><input id="dspec" placeholder="Women's Health Physiotherapist"></div></div><div class="grid2"><div class="field"><label>Unique Email</label><input id="de" type="email" placeholder="doctor\@example.com"></div><div class="field"><label>Phone</label><input id="dphone" placeholder="9876543210"></div></div><div class="field"><label>Temporary / Initial Password</label><input id="dp" type="password" placeholder="Minimum 8 characters"></div><button class="primary" onclick="saveDoctor()">Create Doctor Account</button>`;
+
+
+
+}
+
+
+
+async function saveDoctor(){try{const data={name:$('dn').value,qualification:$('dq').value,specialization:$('dspec').value,email:$('de').value,phone:$('dphone').value,password:$('dp').value};const r=await run('addDoctor',token(),data);closeModal();toast(r.message);doctors()}catch(e){toast(e.message)}}
+
+
+
+async function toggleDoctor(id,status){try{await run('setDoctorStatus',token(),id,String(status).toUpperCase()==='ACTIVE'?'INACTIVE':'ACTIVE');toast('Doctor status updated.');doctors()}catch(e){toast(e.message)}}
+
+
+
+async function resetDoctor(id){const p=prompt('Enter the new password (minimum 8 characters):');if(p===null)return;try{await run('resetDoctorPassword',token(),id,p);toast('Password reset successfully.');}catch(e){toast(e.message)}}
+
+
+
+async function assignDoctor(id){try{const ds=await run('getDoctors',token());const active=ds.filter(d=>String(d.status).toUpperCase()==='ACTIVE');$('modal').style.display='grid';$('modalBox').innerHTML=`<div class="modal-head"><h3>Assign Appointment</h3><button class="secondary" onclick="closeModal()">Close</button></div><div class="field"><label>Doctor</label><select id="assignDoc">${active.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} — ${esc(d.email)}</option>`).join('')}</select></div><button class="primary" onclick="saveAssignment('${id}')">Assign Doctor</button>`;}catch(e){toast(e.message)}}
+
+
+
+async function saveAssignment(id){try{const r=await run('assignAppointmentDoctor',token(),id,$('assignDoc').value);closeModal();toast(r.message);appointments()}catch(e){toast(e.message)}}
+
+
+
+
+
+
+
+async function calendar(){const data=await run('getAdminCalendarData',currentMonth,currentYear);$('calendar').innerHTML=`<div class="page-title"><div><h2>Slot Calendar</h2><p>One-time blocks, recurring blocks and excluded dates.</p></div><button class="primary" onclick="openBlockModal()">+ Create block rule</button></div><div class="panel"><div class="calendar-head"><button class="secondary" onclick="moveMonth(-1)">‹</button><div class="calendar-title">${new Date(currentYear,currentMonth-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'})}</div><button class="secondary" onclick="moveMonth(1)">›</button></div><div class="legend"><span><i class="dot g"></i>Normal</span><span><i class="dot y"></i>Some slots blocked</span><span><i class="dot r"></i>Entire day blocked</span><span><i class="dot w"></i>Sunday/closed</span></div><div class="cal">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(x=>`<div class="dow">${x}</div>`).join('')}${calendarCells(data)}</div></div><div class="grid2"><div class="panel"><h3>Active recurring / one-time rules</h3>${data.rules.length?data.rules.map(r=>`<div class="rule"><div><b>${r.type==='DAY'?'Entire day':'Selected slots'}</b><br><small>${r.startDate} → ${r.endDate} · ${r.weekdays.length?'Every '+r.weekdays.map(w=>['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][w]).join(', '):'One-time'} · ${esc(r.reason)}${r.excludedDates.length?' · '+r.excludedDates.length+' excluded date(s)':''}</small></div><button class="danger" onclick="removeRule('${r.id}')">Remove</button></div>`).join(''):'<p style="color:var(--muted)">No active block rules.</p>'}</div><div class="panel" id="dayDetail"><h3>Select a date</h3><p style="color:var(--muted)">Click any calendar date to see its slots and booking status.</p></div></div>`}
+
+
+
+function calendarCells(data){const first=new Date(data.year,data.month-1,1);let mon=(first.getDay()+6)%7;let out='';for(let i=0;i<mon;i++)out+='<div class="day empty"></div>';data.days.forEach(d=>{let cls=d.closed?'closed':d.fullBlocked?'full':d.slotBlocked?'partial':'normal';out+=`<div class="day ${cls}" onclick="dayDetail('${d.date}')"><span class="dot ${d.closed?'w':d.fullBlocked?'r':d.slotBlocked?'y':'g'}"></span><b>${d.day}</b><div class="appt">${d.closed?'Closed':d.fullBlocked?'Day blocked':d.slotBlocked?'Slots blocked':''}${d.appointments?` · ${d.appointments} appt`:''}</div></div>`});return out}
+
+
+
+function moveMonth(n){currentMonth+=n;if(currentMonth<1){currentMonth=12;currentYear--}if(currentMonth>12){currentMonth=1;currentYear++}calendar()}
+
+
+
+async function dayDetail(date){const d=await run('getDateSlotStatus',date);$('dayDetail').innerHTML=`<h3>${date}</h3>${d.dayBlocked?'<p class="pill red">Entire day blocked</p>':''}<div class="slot-list">${d.slots.map(s=>`<div class="slot ${s.blocked?'blocked':''}"><strong>${s.start} – ${s.end}</strong><small>${s.groupService?esc(s.groupService)+' · '+s.booked+'/5 members':s.booked?'Booked':'Available'}</small><br>${s.blocked?'<span class="pill red">Blocked</span>':`<button class="secondary" onclick="quickSlot('${date}','${s.slotId}')">Block slot</button>`}</div>`).join('')}</div>`}
+
+
+
+function quickSlot(date,slotId){openBlockModal({type:'SLOT',startDate:date,endDate:date,slotIds:[slotId],weekdays:[]})}
+
+
+
+function openBlockModal(pref={}){$('modal').style.display='grid';$('modalBox').innerHTML=`<div class="modal-head"><h3>Create block rule</h3><button class="secondary" onclick="closeModal()">Close</button></div><div class="field"><label>Block type</label><select id="bt"><option value="DAY" ${pref.type==='DAY'?'selected':''}>Entire day</option><option value="SLOT" ${pref.type==='SLOT'?'selected':''}>Specific slot(s)</option></select></div><div class="grid2"><div class="field"><label>Start date</label><input id="bs" type="date" value="${pref.startDate||''}"></div><div class="field"><label>End date</label><input id="be" type="date" value="${pref.endDate||pref.startDate||''}"></div></div><div class="field"><label>Repeat on weekdays (leave empty for one-time)</label><div class="checks">${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((x,i)=>`<label><input type="checkbox" name="wd" value="${i}" ${pref.weekdays&&pref.weekdays.includes(i)?'checked':''}> ${x}</label>`).join('')}</div></div><div class="field"><label>Slots</label><div class="checks">${['SLOT001','SLOT002','SLOT003','SLOT004','SLOT005','SLOT006','SLOT007','SLOT008','SLOT009','SLOT010'].map(x=>`<label><input type="checkbox" name="sl" value="${x}" ${pref.slotIds&&pref.slotIds.includes(x)?'checked':''}> ${x}</label>`).join('')}</div></div><div class="field"><label>Reason</label><select id="br"><option>Doctor unavailable</option><option>Personal leave</option><option>Clinic holiday</option><option>Emergency</option><option>Fully booked</option><option>Other</option></select></div><div class="field"><label>Excluded dates for this recurring rule</label><input id="ex" placeholder="YYYY-MM-DD, YYYY-MM-DD"></div><button class="primary" onclick="saveRule()">Save block rule</button>`}
+
+
+
+async function saveRule(){try{const data={type:$('bt').value,startDate:$('bs').value,endDate:$('be').value,weekdays:[...document.querySelectorAll('input[name=wd]:checked')].map(x=>+x.value),slotIds:[...document.querySelectorAll('input[name=sl]:checked')].map(x=>x.value),reason:$('br').value,excludedDates:$('ex').value.split(',').map(x=>x.trim()).filter(Boolean)};await run('createBlockRule',data);closeModal();toast('Block rule created.');calendar()}catch(e){toast(e.message)}}
+
+
+
+async function removeRule(id){if(!confirm('Remove this block rule?'))return;try{await run('deleteBlockRule',id);toast('Rule removed.');calendar()}catch(e){toast(e.message)}}function closeModal(){if(window.jitsiApi){try{window.jitsiApi.dispose();}catch(e){}window.jitsiApi=null;}$('modal').style.display='none';$('modalBox').innerHTML=''}
+
+
+
+async function stats(){const today=new Date().toISOString().slice(0,10);$('stats').innerHTML=`<div class="page-title"><div><h2>Clinic Stats</h2><p>Weekly, monthly and yearly clinic performance and attendance statistics.</p></div></div><div class="panel"><div class="report-controls"><div class="field" style="margin:0"><label>Period</label><select id="rp"><option value="weekly">Weekly</option><option value="monthly" selected>Monthly</option><option value="yearly">Yearly</option></select></div><div class="field" style="margin:0"><label>Anchor date</label><input id="rd" type="date" value="${today}"></div><button class="primary" onclick="loadReport()">Show stats</button></div><div id="reportBody"></div></div>`;loadReport()}
+
+
+
+async function loadReport(){const r=await run('getAttendanceReport',$('rp').value,$('rd').value,token());$('reportBody').innerHTML=`<div class="report-kpis"><div class="card"><small>Patients attended</small><div class="big">${r.attended}</div><small>${r.from} → ${r.to}</small></div><div class="card"><small>Appointments scheduled</small><div class="big">${r.scheduled}</div><small>excluding cancelled/rejected</small></div></div><div class="grid2"><div class="panel"><h3>Visits by service</h3><canvas id="serviceChart" height="260"></canvas></div><div class="panel"><h3>Visits by date</h3><canvas id="dayChart" height="260"></canvas></div></div>`;if(reportChart)reportChart.forEach(c=>c.destroy());const c1=new Chart($('serviceChart'),{type:'doughnut',data:{labels:Object.keys(r.byService),datasets:[{data:Object.values(r.byService)}]},options:{plugins:{legend:{position:'bottom'}}}});const c2=new Chart($('dayChart'),{type:'bar',data:{labels:Object.keys(r.byDay),datasets:[{label:'Attended',data:Object.values(r.byDay)}]},options:{scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});reportChart=[c1,c2]}
+
+
+
+function formatDateLabel(v){ if(!v) return ''; const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m) return String(v); const d=new Date(Number(m[1]),Number(m[2])-1,Number(m[3])); return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}); }
+
+
+
+async function bills(){$('bills').innerHTML='<div class="page-title"><div><h2>Generate Bill</h2><p>Loading appointments…</p></div></div><div class="panel"><div class="loading-bar"></div></div>';await loadAppointmentsCached(false);$('bills').innerHTML=`<div class="page-title"><div><h2>Generate Bill</h2><p>Create a print-ready clinic bill using the patient’s appointment and service amount.</p></div></div><div class="panel"><div class="field"><label>Select appointment</label><select id="billAppt"><option value="">Select a patient</option>${appts.map(a=>`<option value="${a.id}">${esc(a.name)} — ${esc(a.service)} — ${formatDateLabel(a.date)} — ${esc(a.time)}</option>`).join('')}</select></div><div class="field"><label>Final bill amount (₹) — leave blank to use the appointment amount</label><input id="billAmount" placeholder="e.g. 900"></div><button class="primary" onclick="generateBill()">Generate Bill</button></div><div id="billArea" style="margin-top:18px"></div>`}
+
+
+
+async function openBill(id){await loadPage('bills');if($('billAppt')){$('billAppt').value=id;await generateBill()}}
+
+
+
+async function generateBill(){const id=$('billAppt').value;if(!id)return toast('Select an appointment.');try{const selected=appts.find(x=>x.id===id);const override=$('billAmount')?$('billAmount').value.trim():'';const b=await run('saveBillRecord',id,override);const a=b.appointment;$('billArea').innerHTML=`<div class="bill" id="printBill"><div class="bill-head"><div><h1>${esc(b.clinicName)}</h1><p>${esc(b.doctor)}<br>${esc(b.qualification)}<br>${esc(b.email)} · ${esc(b.instagram)}</p></div><img src="${b.logo}"></div><div style="display:flex;justify-content:space-between;margin-top:30px"><div><b>BILL TO</b><br>${esc(a.name)}<br>${esc(a.email)}<br>${esc(a.phone)}</div><div style="text-align:right"><b>Bill No.</b><br>${esc(b.billNo)}<br><b>Date</b><br>${formatDateLabel(a.date)}</div></div><table class="table" style="margin-top:35px"><thead><tr><th>Service opted</th><th>Date</th><th>Time</th><th style="text-align:right">Amount</th></tr></thead><tbody><tr><td>${esc(a.service)}</td><td>${formatDateLabel(a.date)}</td><td>${esc(a.time)}</td><td style="text-align:right">₹${esc(a.amount)}</td></tr></tbody></table><div class="bill-total">Total: ₹${esc(a.amount)}</div><p style="margin-top:55px;color:var(--muted)">Thank you for choosing Bump N Beyond Physio.</p><div class="bill-footer"><span>For Queries & Support · bumpnbeyondphysio\@gmail.com</span><span>Dr. Nivedhaa.K.G (P.T)</span></div></div><div style="text-align:center;margin:15px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="primary" onclick="printProfessionalBill()">Print / Save as PDF</button><button class="secondary" onclick="sendGeneratedBill('${id}', '${esc(a.amount)}')">✉ Send Bill to Patient</button></div>`}catch(e){toast(e.message)}}
+
+
+
+function printProfessionalBill(){
+  const bill = document.getElementById('printBill');
+  if (!bill) return toast('Generate a bill before printing.');
+  const win = window.open('', '_blank');
+  if (!win) return toast('Please allow pop-ups to print the bill.');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Bump N Beyond Physio Invoice</title>
+  <style>
+    @page{size:A4;margin:0}
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    html,body{margin:0;padding:0;background:#fff;color:#244a46;font-family:Arial,Helvetica,sans-serif}
+    body{padding:16mm 17mm;font-size:11pt;line-height:1.45}
+    .bill{width:100%;max-width:none;margin:0 auto;background:#fff;color:#244a46;border:0!important;box-shadow:none!important;min-height:0!important;padding:0!important}
+    .bill-head{display:flex;align-items:center;justify-content:space-between;gap:22px;border-bottom:2px solid #0f6258;padding-bottom:18px}
+    .bill-head h1{font-size:23pt;color:#0f6258;margin:0 0 7px;font-family:Georgia,serif}
+    .bill-head p{margin:3px 0;font-size:10pt;line-height:1.5}
+    .bill-head img{width:92px;height:92px;object-fit:contain}
+    .bill table{width:100%;border-collapse:collapse;margin-top:28px;font-size:10pt}
+    .bill th{background:#eaf4f1;text-align:left;font-weight:700}
+    .bill th,.bill td{padding:10px 8px;border-bottom:1px solid #dce8e4}
+    .bill-total{margin:24px 0 0 auto;width:48%;border-top:2px solid #0f6258;padding-top:12px;text-align:right;font-size:17pt;font-weight:700;color:#0f6258}
+    .bill-footer{display:flex;justify-content:space-between;gap:20px;border-top:1px solid #dce8e4;padding-top:10px;margin-top:24px;font-size:9pt;color:#718985}
+    @media print{body{padding:16mm 17mm} }
+  </style></head><body>${bill.outerHTML}<script>window.onload=()=>{const imgs=[...document.images];Promise.all(imgs.map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r}))).then(()=>setTimeout(()=>{window.focus();window.print()},250))};window.onafterprint=()=>window.close();<\/script>
+<style id="bnb-admin-full-mobile-adaptive-fix">
+html,body{width:100%;max-width:100%;overflow-x:hidden}*{box-sizing:border-box}img,iframe{max-width:100%}.admin-menu-toggle{display:none;border:1px solid rgba(255,255,255,.5);background:transparent;color:inherit;border-radius:10px;width:42px;height:42px;padding:9px;cursor:pointer;align-items:center;justify-content:center;flex-direction:column;gap:5px}.admin-menu-toggle span{display:block;width:21px;height:2px;background:currentColor;border-radius:2px}
+@media(max-width:720px){
+  #app{width:100%;max-width:100%;overflow-x:clip}
+  .top{display:flex!important;align-items:center!important;gap:8px!important;flex-wrap:nowrap!important;padding:12px!important;min-height:74px}
+  .top .brand{display:flex!important;align-items:center!important;gap:9px!important;flex:1 1 auto!important;min-width:0!important}
+  .top .brand img{width:42px!important;height:42px!important;flex:0 0 42px;object-fit:contain}
+  .top .brand h1{font-size:clamp(15px,4.3vw,20px)!important;line-height:1.12!important;white-space:normal!important;overflow-wrap:anywhere;margin:0!important}
+  .top .brand small{font-size:10px!important;line-height:1.2;display:block;overflow-wrap:anywhere}
+  .admin-menu-toggle{display:flex!important;flex:0 0 42px!important;color:#fff!important}
+  .logout{flex:0 0 auto!important;padding:9px 11px!important;font-size:13px!important;white-space:nowrap}
+  .shell{display:block!important;width:100%!important;min-width:0!important}
+  .side{display:none!important;position:relative!important;top:auto!important;width:100%!important;height:auto!important;max-height:65dvh!important;overflow-y:auto!important;overflow-x:hidden!important;border:1px solid var(--line);border-radius:0 0 16px 16px;box-shadow:0 12px 24px rgba(0,0,0,.1);z-index:30}
+  .side.mobile-open{display:block!important}
+  .nav{display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:4px!important;padding:10px!important;overflow:visible!important}
+  .nav button{display:flex!important;width:100%!important;min-width:0!important;justify-content:flex-start!important;white-space:normal!important;text-align:left!important;padding:11px 12px!important;font-size:14px!important;gap:10px!important}
+  .nav-icon{flex:0 0 28px!important}.nav-icon img{width:24px!important;height:24px!important;object-fit:contain}
+  .nav-label{white-space:normal!important;overflow-wrap:anywhere}
+  .main{width:100%!important;min-width:0!important;padding:12px!important;overflow-x:hidden!important}
+  .view{width:100%!important;min-width:0!important;max-width:100%!important}
+  .page-title{display:flex!important;flex-wrap:wrap!important;gap:8px!important}.page-title h2{font-size:clamp(20px,6vw,28px)!important;line-height:1.2}
+  .panel,.card,.review-admin-card,.modal-box,.bill{min-width:0!important;max-width:100%!important}
+  .cards,.grid2{grid-template-columns:minmax(0,1fr)!important}
+  .table-wrap{width:100%!important;max-width:100%!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch}.table{min-width:760px!important}
+  .modal{padding:8px!important}.modal-box{width:calc(100vw - 16px)!important;max-width:calc(100vw - 16px)!important;max-height:92dvh!important;overflow:auto!important;padding:14px!important}
+  .form-row,.form-grid{grid-template-columns:minmax(0,1fr)!important}
+  input,select,textarea{max-width:100%!important;min-width:0!important}
+  .bill{width:100%!important;overflow-wrap:anywhere}
+}
+@media(min-width:721px){.admin-menu-toggle{display:none!important}.side{display:block!important}}
+</style>
+
+
+<style id="bnb-appointments-no-horizontal-scroll-and-full-tab-meeting-fix">
+@media(max-width:720px){
+  #appointments .panel{padding:10px!important;overflow:visible!important}
+  #appointments .table-wrap{overflow:visible!important;width:100%!important;max-width:100%!important}
+  #appointments .table{width:100%!important;min-width:0!important;table-layout:fixed!important;border-collapse:separate!important;border-spacing:0 10px!important;font-size:13px!important}
+  #appointments .table thead{display:none!important}
+  #appointments .table tbody{display:block!important;width:100%!important}
+  #appointments .table tbody tr{display:block!important;width:100%!important;min-width:0!important;background:#fff!important;border:1px solid var(--line)!important;border-radius:14px!important;padding:9px 11px!important;margin:0 0 12px!important;box-shadow:0 3px 12px rgba(15,98,88,.05)}
+  #appointments .table tbody td{display:grid!important;grid-template-columns:minmax(100px,36%) minmax(0,1fr)!important;gap:8px!important;align-items:start!important;width:100%!important;min-width:0!important;white-space:normal!important;overflow-wrap:anywhere!important;padding:8px 2px!important;border-bottom:1px solid #edf3f1!important;text-align:left!important}
+  #appointments .table tbody td:last-child{border-bottom:0!important}
+  #appointments .table tbody td:before{font-weight:800!important;color:var(--muted)!important;font-size:11px!important;line-height:1.4!important}
+  #appointments .table tbody td:nth-child(1):before{content:'Patient'}
+  #appointments .table tbody td:nth-child(2):before{content:'Service'}
+  #appointments .table tbody td:nth-child(3):before{content:'Date'}
+  #appointments .table tbody td:nth-child(4):before{content:'Time'}
+  #appointments .table tbody td:nth-child(5):before{content:'Amount'}
+  #appointments .table tbody td:nth-child(6):before{content:'UTR / Transaction'}
+  #appointments .table tbody td:nth-child(7):before{content:'Payment'}
+  #appointments .table tbody td:nth-child(8):before{content:'Status'}
+  #appointments .table tbody td:nth-child(9):before{content:'Jitsi'}
+  #appointments .table tbody td:nth-child(10):before{content:'Calendar'}
+  #appointments .table tbody td:nth-child(11):before{content:'Actions'}
+  #appointments .table tbody td:nth-child(11)>div{display:flex!important;flex-wrap:wrap!important;gap:6px!important;min-width:0!important}
+  #appointments .table tbody td:nth-child(11) button{max-width:100%!important;white-space:normal!important;line-height:1.25!important;padding:9px 10px!important;font-size:12px!important}
+  #appointments .page-title{align-items:flex-start!important}
+}
+</style>
+
+</body></html>`;
+  win.document.open(); win.document.write(html); win.document.close();
+}
+
+async function sendGeneratedBill(id,amount){const btn=[...document.querySelectorAll('#billArea button')].find(x=>x.textContent.includes('Send Bill'));if(btn){btn.disabled=true;btn.textContent='Sending bill…'}try{const r=await run('sendBillEmail',id,amount);toast(r.message||('Bill sent successfully to '+r.email))}catch(e){toast((e&&e.message)||'Unable to send the bill email.')}finally{if(btn){btn.disabled=false;btn.textContent='✉ Send Bill to Patient'}}}
+
+
+
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+
+
+
+</script>
+
+
+
+<style>@media print{body>*:not(#app){display:none!important}.top,.side,.page-title,.panel,#bills>.panel,#bills>.page-title,#bills>div:not(#billArea){display:none!important}.shell{display:block}.main{padding:0}.bill{border:0;box-shadow:none;min-height:0}}</style>
+
+
+
+
+<style id="admin-responsive-fix">
+html,body{max-width:100%;overflow-x:hidden}.admin-loading{display:inline-block;margin-left:10px;color:var(--muted);font-size:12px}.loading-bar{height:5px;border-radius:999px;background:linear-gradient(90deg,#0f6258 20%,#dcebe6 20%,#dcebe6 40%,#0f6258 40%,#0f6258 60%,#dcebe6 60%);background-size:220% 100%;animation:adminload 1s linear infinite}.utr-cell{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.02em}.utr-verification-box{margin-top:14px;padding:16px;border:2px solid #caa85e;border-radius:14px;background:#fffaf0}.utr-verification-box small{color:var(--muted);display:block}.utr-verification-box div{font-size:20px;font-weight:900;margin-top:7px;word-break:break-all;color:#244a46}.link-button{border:0;background:transparent;color:var(--teal);font-weight:800;text-decoration:underline;cursor:pointer;padding:4px}.jitsi-container{height:min(70vh,620px);min-height:430px;border-radius:16px;overflow:hidden;background:#10201e}.jitsi-note{padding:10px 12px;margin:10px 0;border-radius:10px;background:#f4faf7;color:var(--muted);font-size:12px;line-height:1.45}.jitsi-loading{height:100%;display:grid;place-items:center;color:#fff;padding:20px;text-align:center}.jitsi-container iframe{border:0!important}@keyframes adminload{to{background-position:-220% 0}}
+.review-admin-grid{display:grid;gap:14px}.review-admin-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}.review-admin-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.review-admin-stars{letter-spacing:2px;color:#c58a00;font-size:16px}.review-admin-review{margin:12px 0;line-height:1.55;color:#365b57;white-space:pre-wrap}.review-admin-reply{margin-top:12px;padding:12px 14px;background:#f4faf7;border-left:3px solid var(--teal);border-radius:0 10px 10px 0;white-space:pre-wrap}.review-admin-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}.status-pending{background:#fff7df!important;color:#916c00!important}.status-hidden{background:#eef0f0!important;color:#687572!important}.status-approved{background:#e8f6ef!important;color:#277457!important} .review-attachment-admin{display:inline-block;margin-top:8px;color:var(--teal);font-weight:700} .review-meta{font-size:12px;color:var(--muted);line-height:1.5} .reply-box{width:100%;min-height:150px;resize:vertical;border:1px solid var(--line);border-radius:12px;padding:12px;font:inherit;box-sizing:border-box}
+@media(max-width:900px){.top{padding:14px 16px}.top .brand h1{font-size:20px}.shell{display:block!important}.side{position:sticky;top:84px;z-index:8;overflow-x:auto;width:100%!important;height:auto!important}.nav{display:flex!important;flex-direction:row!important;gap:6px;overflow-x:auto;padding:8px}.nav button{min-width:max-content!important;justify-content:center}.main{padding:14px!important}.grid2,.cards{grid-template-columns:1fr!important}.table-wrap{overflow-x:auto}.table{min-width:1050px}.modal-box{width:min(96vw,720px)!important;padding:18px!important}}
+@media(max-width:600px){.top{position:relative}.top .brand{min-width:0}.top .brand img{width:44px;height:44px}.top .brand h1{font-size:17px;white-space:normal}.logout{padding:8px 10px}.side{top:0}.nav{padding:6px}.nav button{font-size:12px;padding:9px!important}.main{padding:10px!important}.page-title{gap:10px;flex-wrap:wrap}.page-title h2{font-size:20px}.modal{padding:8px}.modal-box{max-height:94vh;border-radius:16px}.jitsi-container{min-height:55vh;height:65vh}.utr-verification-box div{font-size:16px}}
+</style>
+
+<style id="bnb-admin-full-mobile-adaptive-fix">
+html,body{width:100%;max-width:100%;overflow-x:hidden}*{box-sizing:border-box}img,iframe{max-width:100%}.admin-menu-toggle{display:none;border:1px solid rgba(255,255,255,.5);background:transparent;color:inherit;border-radius:10px;width:42px;height:42px;padding:9px;cursor:pointer;align-items:center;justify-content:center;flex-direction:column;gap:5px}.admin-menu-toggle span{display:block;width:21px;height:2px;background:currentColor;border-radius:2px}
+@media(max-width:720px){
+  #app{width:100%;max-width:100%;overflow-x:clip}
+  .top{display:flex!important;align-items:center!important;gap:8px!important;flex-wrap:nowrap!important;padding:12px!important;min-height:74px}
+  .top .brand{display:flex!important;align-items:center!important;gap:9px!important;flex:1 1 auto!important;min-width:0!important}
+  .top .brand img{width:42px!important;height:42px!important;flex:0 0 42px;object-fit:contain}
+  .top .brand h1{font-size:clamp(15px,4.3vw,20px)!important;line-height:1.12!important;white-space:normal!important;overflow-wrap:anywhere;margin:0!important}
+  .top .brand small{font-size:10px!important;line-height:1.2;display:block;overflow-wrap:anywhere}
+  .admin-menu-toggle{display:flex!important;flex:0 0 42px!important;color:#fff!important}
+  .logout{flex:0 0 auto!important;padding:9px 11px!important;font-size:13px!important;white-space:nowrap}
+  .shell{display:block!important;width:100%!important;min-width:0!important}
+  .side{display:none!important;position:relative!important;top:auto!important;width:100%!important;height:auto!important;max-height:65dvh!important;overflow-y:auto!important;overflow-x:hidden!important;border:1px solid var(--line);border-radius:0 0 16px 16px;box-shadow:0 12px 24px rgba(0,0,0,.1);z-index:30}
+  .side.mobile-open{display:block!important}
+  .nav{display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:4px!important;padding:10px!important;overflow:visible!important}
+  .nav button{display:flex!important;width:100%!important;min-width:0!important;justify-content:flex-start!important;white-space:normal!important;text-align:left!important;padding:11px 12px!important;font-size:14px!important;gap:10px!important}
+  .nav-icon{flex:0 0 28px!important}.nav-icon img{width:24px!important;height:24px!important;object-fit:contain}
+  .nav-label{white-space:normal!important;overflow-wrap:anywhere}
+  .main{width:100%!important;min-width:0!important;padding:12px!important;overflow-x:hidden!important}
+  .view{width:100%!important;min-width:0!important;max-width:100%!important}
+  .page-title{display:flex!important;flex-wrap:wrap!important;gap:8px!important}.page-title h2{font-size:clamp(20px,6vw,28px)!important;line-height:1.2}
+  .panel,.card,.review-admin-card,.modal-box,.bill{min-width:0!important;max-width:100%!important}
+  .cards,.grid2{grid-template-columns:minmax(0,1fr)!important}
+  .table-wrap{width:100%!important;max-width:100%!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch}.table{min-width:760px!important}
+  .modal{padding:8px!important}.modal-box{width:calc(100vw - 16px)!important;max-width:calc(100vw - 16px)!important;max-height:92dvh!important;overflow:auto!important;padding:14px!important}
+  .form-row,.form-grid{grid-template-columns:minmax(0,1fr)!important}
+  input,select,textarea{max-width:100%!important;min-width:0!important}
+  .bill{width:100%!important;overflow-wrap:anywhere}
+}
+@media(min-width:721px){.admin-menu-toggle{display:none!important}.side{display:block!important}}
+</style>
+
+
+
+
+</body></html>
