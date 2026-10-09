@@ -2,7 +2,7 @@
    Keep this file on GitHub Pages only. Do not place Apps Script server code in the public repository. */
 (function () {
   'use strict';
-  const GAS_URL = "https://script.google.com/macros/s/AKfycbxBIE8FGZpe5xRlTT2__6SJJUTeclNYNA9mNYQz3dTVAp7AQV2kJfiFiZgaqrL_qwRf-w/exec";
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbw7YhEC5nCqEhsl5T86BJY7idvMZ8gp8WaUW1RUWTyJVasXvWQqz4YsHc-0yrvDcI3O5g/exec";
   const SITE_ORIGIN = 'https://bumpnbeyondphysio-dot.github.io';
   const BRIDGE_URL = GAS_URL + '?page=bridge';
   const pending = new Map();
